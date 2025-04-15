@@ -1,0 +1,127 @@
+# .github/workflows/ci.yml
+
+name: Go CI Pipeline
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21" # Specify your Go version
+          cache: false # Disable caching for golangci-lint if preferred
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          # Required: the version of golangci-lint is required and must be specified without patch version: we always use the latest patch version.
+          version: v1.59 # Or your desired version
+          args: --config .golangci.yml ./... # Pass config file and target paths
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21" # Specify your Go version
+          cache: true # Enable Go build/module cache
+      - name: Check Go module Tidy
+        run: |
+          go mod tidy -v
+          if ! git diff --quiet go.mod go.sum; then
+            echo "go.mod/go.sum differs, please run 'go mod tidy' and commit changes"
+            exit 1
+          fi
+      - name: Verify Go modules
+        run: go mod verify
+      - name: Run Unit/Integration Tests
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
+          if-no-files-found: error # Error if coverage file not generated
+
+  vuln_check:
+    name: Vulnerability Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache: true
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Run govulncheck
+        # Continue even if vulnerabilities are found for now (policy can be refined).
+        # Fail-on: can be 'vuln' to fail on any vulnerability found later.
+        run: govulncheck ./... || true
+
+  build:
+    name: Build Check
+    # Runs on one platform for basic build validation in CI
+    runs-on: ubuntu-latest
+    # Depends on prior validation steps passing
+    needs: [lint, test, vuln_check]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache: true
+      - name: Build
+        run: go build -v .
+      # Optional: Upload the built binary as an artifact if needed by subsequent jobs
+      # This is useful if E2E tests run on a different runner or matrix
+      - name: Upload Linux Binary Artifact (Example)
+        uses: actions/upload-artifact@v4
+        with:
+          name: convi-linux-amd64
+          path: ./convi # Assuming default output name from 'go build .'
+          if-no-files-found: error
+
+  e2e_test:
+    name: E2E Tests
+    # Runs after the build check to ensure compilation works
+    needs: [build]
+    # Consider running on matrix [ubuntu-latest, macos-latest, windows-latest] eventually
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+          cache: true
+
+      # Option 1: Re-build the binary within the E2E job
+      - name: Build convi for E2E
+        run: go build -o ./convi . # Build specifically for the test runner OS/Arch
+
+      # Option 2: Download the binary artifact from the 'build' job
+      # Requires the 'build' job to upload the correct artifact
+      # - name: Download Linux Binary Artifact (Example)
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: convi-linux-amd64
+      # - name: Make binary executable
+      #   run: chmod +x ./convi
+
+      # Run the E2E tests, assuming they are in an 'e2e' directory
+      - name: Run E2E Tests
+        # E2E tests likely need the path to the built binary
+        # They might be run via 'go test' or a separate script
+        run: go test ./e2e/... -v -timeout 10m # Add verbose, increase timeout

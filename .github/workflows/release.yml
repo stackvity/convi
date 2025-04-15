@@ -1,0 +1,119 @@
+# .github/workflows/release.yml
+# Defines the workflow for building and releasing convi binaries upon Git tag push.
+# Corresponds to tasks TASK-CONVI-064, TASK-CONVI-085
+
+name: Release Convi Binaries
+
+on:
+  push:
+    tags:
+      - "v*.*.*" # Trigger workflow on pushing tags like v1.0.0, v1.2.3-beta
+
+permissions:
+  contents: write # Needed to create releases and upload assets
+
+jobs:
+  # Optional: Add a validation job that runs first
+  validate:
+    name: Validate Code Before Release Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code at the tag
+        uses: actions/checkout@v4
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod" # Dynamically use Go version from go.mod
+          cache: true
+
+      - name: Install Dev Dependencies (if needed by make targets)
+        run: make install-deps # Assuming Makefile target exists
+
+      - name: Verify Go Modules
+        run: |
+          go mod tidy -v
+          # Check if tidy changed anything (optional but good practice)
+          # git diff --quiet go.mod go.sum || (echo "go.mod/go.sum differs after tidy" && exit 1)
+          go mod verify
+
+      - name: Run Linters
+        run: make lint # Assuming Makefile target exists
+
+      - name: Run Tests
+        run: make test # Assuming Makefile target exists
+
+      - name: Run Vulnerability Check
+        run: make vuln-check # Assuming Makefile target exists
+
+  # Build and release job, depends on validation passing
+  release:
+    name: Build and Release Go Binaries
+    needs: validate # Ensure validation passes before building release artifacts
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Define the target platforms
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          # Exclude combinations not typically targeted or easily built
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Checkout code at the tag
+        uses: actions/checkout@v4
+
+      - name: Set up Go from go.mod
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod" # Dynamically use Go version from go.mod
+          cache: true
+
+      - name: Get Version from Tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build binary with version embedding
+        id: build_binary # Add an ID to the step to reference its outputs
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          # LDFLAGS to embed version info (aligns with Makefile/main.go variable names)
+          # Assuming main.version, main.commit, main.date are used in main.go
+          # Using tag for version, commit SHA, and build time.
+          VERSION_LDFLAGS: "-s -w -X main.version=${{ steps.get_version.outputs.VERSION }} -X main.commit=${{ github.sha }} -X main.date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+        run: |
+          # Set output name based on OS/Arch, handle .exe for Windows
+          OUTPUT_NAME="convi-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" == "windows" ]; then
+            OUTPUT_NAME+=".exe"
+          fi
+          echo "Building ${OUTPUT_NAME}..."
+          # Use CGO_ENABLED=0 for potentially smaller static binaries, may need adjustment if C dependencies exist
+          CGO_ENABLED=0 go build -trimpath -ldflags="${VERSION_LDFLAGS}" -o "${OUTPUT_NAME}" .
+          # Set the asset name as a step output
+          echo "asset_name=${OUTPUT_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Generate Checksum
+        id: generate_checksum # Add an ID to the step
+        run: |
+          # Reference the output from the previous step
+          asset_name="${{ steps.build_binary.outputs.asset_name }}"
+          checksum_name="${asset_name}.sha256"
+          sha256sum "${asset_name}" > "${checksum_name}"
+          # Set the checksum file name as a step output
+          echo "checksum_name=${checksum_name}" >> $GITHUB_OUTPUT
+
+      - name: Upload Release Assets
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Reference step outputs directly for artifacts
+          artifacts: "${{ steps.build_binary.outputs.asset_name }},${{ steps.generate_checksum.outputs.checksum_name }}"
+          name: Release ${{ steps.get_version.outputs.VERSION }}
+          # Consider using generateReleaseNotes: true or providing a body file/content
+          # body: "Release notes for ${{ steps.get_version.outputs.VERSION }}"
+          draft: false # Set to true if manual review before publishing is needed
+          prerelease: contains(${{ steps.get_version.outputs.VERSION }}, '-') # Mark as pre-release if tag contains '-' (e.g., v1.0.0-beta)
