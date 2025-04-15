@@ -62,7 +62,7 @@ type Options struct {
 	FrontMatter      FrontMatterConfig `mapstructure:"frontMatter"`
 
 	// Watch Specific Settings
-	Watch WatchConfig `mapstructure:"watch"` // Nested struct for watch-specific options like debounce.
+	Watch WatchConfig `mapstructure:"watchConfig"` // *** UPDATED TAG HERE *** Nested struct for watch-specific options like debounce.
 
 	// Internal - Not typically set by user directly
 	ConfigFile string `mapstructure:"config"` // Path to the config file used

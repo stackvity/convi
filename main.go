@@ -366,7 +366,7 @@ func initConfig() {
 	v.SetDefault("largeFileMode", "skip")
 	v.SetDefault("binaryMode", "skip")
 	v.SetDefault("skipHiddenFiles", true)
-	v.SetDefault("watch.debounce", "300ms") // Default for nested struct
+	v.SetDefault("watchConfig.debounce", "300ms") // *** UPDATED KEY HERE *** Default for nested struct
 
 	// 2. Bind Environment Variables
 	v.AutomaticEnv() // Read in environment variables that match
@@ -413,8 +413,24 @@ func initConfig() {
 			// Only error out on other read errors (e.g., permissions, bad format)
 			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 				// Config file was found but another error occurred
-				fmt.Fprintf(os.Stderr, "Error reading config file %s: %v\n", v.ConfigFileUsed(), err)
-				os.Exit(ExitCodeConfigError) // Treat parsing errors as fatal
+				// Check if the error is the specific YAML control character error
+				if strings.Contains(err.Error(), "yaml: control characters are not allowed") {
+					// Provide a more specific error message if it's trying to parse the binary
+					// Check if the file being parsed *is* the executable name
+					potentialConfigPath := v.ConfigFileUsed()
+					executableName := filepath.Base(os.Args[0])                                                                               // Get executable name
+					if filepath.Base(potentialConfigPath) == executableName || filepath.Base(potentialConfigPath) == executableName+".yaml" { // Check common cases
+						fmt.Fprintf(os.Stderr, "Error: Found executable '%s' while searching for config file. Please remove it or use --config flag. Error: %v\n", potentialConfigPath, err)
+					} else {
+						// Generic config file error
+						fmt.Fprintf(os.Stderr, "Error reading config file %s: %v\n", potentialConfigPath, err)
+					}
+					os.Exit(ExitCodeConfigError)
+				} else {
+					// Other config read errors
+					fmt.Fprintf(os.Stderr, "Error reading config file %s: %v\n", v.ConfigFileUsed(), err)
+					os.Exit(ExitCodeConfigError) // Treat parsing errors as fatal
+				}
 			}
 			// else: Config file not found, which is fine if not specified via flag.
 		}

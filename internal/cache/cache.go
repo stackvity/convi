@@ -3,16 +3,17 @@ package cache
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/gob" // Changed to gob as per techstack.md Sec 3.C reasoning.
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync" // *** IMPORT sync PACKAGE ***
 	"time"
 
-	"github.com/stackvity/convi/internal/config" // Depends on config for hashing
+	"github.com/stackvity/convi/internal/config"
 	"github.com/stackvity/convi/internal/filesystem"
 )
 
@@ -69,6 +70,7 @@ type fileCacheManager struct {
 	isDirty      bool                  // Tracks if the cache needs persisting
 	configHash   []byte                // Config hash for the current run (used if Check doesn't provide it)
 	templateHash []byte                // Template hash for the current run (used if Check doesn't provide it)
+	mu           sync.RWMutex          // *** ADD MUTEX FOR CONCURRENT ACCESS ***
 }
 
 // NewFileCacheManager creates a new file-based cache manager.
@@ -81,8 +83,10 @@ func NewFileCacheManager(cacheFilePath string, fs filesystem.FileSystem, logger 
 		logger:    logger,
 		cacheData: make(map[string]CacheEntry),
 		isDirty:   false,
+		// mu is initialized automatically
 	}
 
+	// No lock needed here as it's called during single-threaded initialization
 	if err := cm.load(); err != nil {
 		// If cache file doesn't exist or is corrupted, log it but start fresh.
 		// Don't treat as a fatal error.
@@ -97,6 +101,7 @@ func NewFileCacheManager(cacheFilePath string, fs filesystem.FileSystem, logger 
 }
 
 // load reads the cache file from disk and deserializes it.
+// No lock needed if called only during single-threaded initialization.
 func (cm *fileCacheManager) load() error {
 	data, err := cm.fs.ReadFile(cm.filePath)
 	if err != nil {
@@ -115,6 +120,11 @@ func (cm *fileCacheManager) load() error {
 	}
 
 	decoder := gob.NewDecoder(bytes.NewReader(data))
+	// Use a temporary map to decode into, then swap under lock if needed,
+	// though if only called at init, direct decode is fine.
+	// Adding lock for safety if load could theoretically be called later.
+	cm.mu.Lock() // Lock before modifying shared state
+	defer cm.mu.Unlock()
 	if err := decoder.Decode(&cm.cacheData); err != nil {
 		// Log specific decode error for better debugging
 		cm.logger.Error("Failed to decode cache file, cache will be rebuilt.", "file", cm.filePath, "error", err)
@@ -136,7 +146,11 @@ func (cm *fileCacheManager) Check(filePath string, currentConfigHash []byte, cur
 		return StatusError, fmt.Errorf("failed to get absolute path for '%s': %w", filePath, err)
 	}
 
+	// *** ACQUIRE READ LOCK ***
+	cm.mu.RLock()
 	entry, found := cm.cacheData[absFilePath]
+	cm.mu.RUnlock() // *** RELEASE READ LOCK ***
+
 	if !found {
 		cm.logger.Debug("Cache miss: File not found in cache", "file", absFilePath)
 		return StatusMiss, nil
@@ -202,7 +216,11 @@ func (cm *fileCacheManager) Update(filePath string, entry CacheEntry) error {
 		return nil // Don't return error, just couldn't cache it.
 	}
 
-	cm.cacheData[absFilePath] = entry
+	// *** ACQUIRE WRITE LOCK ***
+	cm.mu.Lock()
+	defer cm.mu.Unlock() // *** RELEASE WRITE LOCK ***
+
+	cm.cacheData[absFilePath] = entry // <<< THIS IS THE WRITE OPERATION
 	cm.isDirty = true
 	cm.logger.Debug("Cache entry updated in memory", "file", absFilePath)
 	return nil
@@ -211,21 +229,38 @@ func (cm *fileCacheManager) Update(filePath string, entry CacheEntry) error {
 // Persist implements the CacheManager interface.
 // TASK-CONVI-032: Implement `RealCacheManager.Persist` logic (atomic write).
 func (cm *fileCacheManager) Persist() error {
+	// *** ACQUIRE WRITE LOCK (before checking isDirty and reading cacheData) ***
+	cm.mu.Lock()
+	// Defer unlock until after potential write operations
+	// defer cm.mu.Unlock() // Moved down
+
 	if !cm.isDirty {
 		cm.logger.Debug("Cache persistence skipped: Cache not dirty.")
-		return nil // Nothing to persist
+		cm.mu.Unlock() // *** RELEASE LOCK if not dirty ***
+		return nil     // Nothing to persist
 	}
 
 	startTime := time.Now()
 	cm.logger.Debug("Persisting cache...", "file", cm.filePath, "entries", len(cm.cacheData))
 
+	// Create a copy of the data to encode *while holding the lock*
+	// This prevents other goroutines from modifying it during encoding.
+	cacheDataCopy := make(map[string]CacheEntry, len(cm.cacheData))
+	for k, v := range cm.cacheData {
+		cacheDataCopy[k] = v
+	}
+	// *** RELEASE LOCK *after* copying data for encoding ***
+	cm.mu.Unlock()
+
+	// Encode the *copy* outside the lock
 	var buffer bytes.Buffer
 	encoder := gob.NewEncoder(&buffer)
-	if err := encoder.Encode(cm.cacheData); err != nil {
+	if err := encoder.Encode(cacheDataCopy); err != nil {
+		// Encoding failed, nothing was written, no state changed regarding lock
 		return fmt.Errorf("failed to encode cache data: %w", err)
 	}
 
-	// Atomic write: Write to temp file then rename
+	// Atomic write: Write to temp file then rename (FS operations are generally safe)
 	tempFilePath := cm.filePath + ".tmp" + fmt.Sprintf(".%d", time.Now().UnixNano())
 	perm := os.FileMode(0644) // Standard file permissions
 
@@ -248,7 +283,11 @@ func (cm *fileCacheManager) Persist() error {
 		return fmt.Errorf("failed to rename temporary cache file to '%s': %w", cm.filePath, err)
 	}
 
+	// *** ACQUIRE WRITE LOCK *again* to safely update isDirty ***
+	cm.mu.Lock()
 	cm.isDirty = false // Cache is now persisted
+	cm.mu.Unlock()     // *** RELEASE LOCK ***
+
 	duration := time.Since(startTime)
 	cm.logger.Debug("Cache persisted successfully", "file", cm.filePath, "duration", duration)
 	return nil
@@ -258,10 +297,15 @@ func (cm *fileCacheManager) Persist() error {
 // Called internally by `--clear-cache` logic or potentially other scenarios.
 func (cm *fileCacheManager) Clear() error {
 	cm.logger.Info("Clearing cache...", "file", cm.filePath)
+
+	// *** ACQUIRE WRITE LOCK ***
+	cm.mu.Lock()
 	cm.cacheData = make(map[string]CacheEntry) // Clear in-memory
 	cm.isDirty = true                          // Mark as dirty to persist the empty state
+	cm.mu.Unlock()                             // *** RELEASE LOCK ***
 
 	// Attempt to delete the cache file on disk
+	// FS operations are usually safe, no lock needed around os.Remove
 	err := cm.fs.Remove(cm.filePath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		// Log error but don't necessarily fail the operation, cache is already cleared in memory.

@@ -21,7 +21,7 @@ It focuses on core conversion functionality, excellent performance through concu
 - **Parallel Processing:** Utilizes multiple CPU cores for faster conversion (`--concurrency`).
 - **Robust Caching:** Skips unchanged files based on metadata and content hashes (source, template, config). Cache control flags (`--cache`, `--no-cache`, `--clear-cache`) provided.
 - **Informative Output:** Displays progress (TTY) and a detailed summary report (counts, errors, duration). Structured verbose logging (`-v`).
-- **Configuration:** Layered config (Flags > Env > File > Defaults) via `viper`. Supports `convi.yaml` files.
+- **Configuration:** Layered config (Flags > Env > File > Defaults) via `viper`. Supports `convi.yaml` / `.convi.yaml` files.
 - **Ignoring Files:** Uses `.gitignore` syntax via `.conviignore` files, config (`ignore` list), and `--ignore` flags.
 - **File Handling Modes:** Configurable behavior for binary (`--binary-mode`) and large files (`--large-file-mode`).
 - **Customization:** Supports custom Go templates (`--template`) and optional YAML/TOML front matter generation (`frontMatter` config).
@@ -30,48 +30,83 @@ It focuses on core conversion functionality, excellent performance through concu
 
 ## Installation
 
-### 1. Binary Download (Recommended)
+Choose the method that best suits your needs:
+
+### 1. Binary Download (Recommended for Users)
 
 1.  Go to the [Latest Release](https://github.com/stackvity/convi/releases/latest) page.
 2.  Download the appropriate archive (`.tar.gz` or `.zip`) for your operating system and architecture (e.g., `convi-linux-amd64.tar.gz`, `convi-windows-amd64.zip`).
-3.  Extract the archive.
-4.  Place the `convi` (or `convi.exe`) binary in a directory included in your system's `PATH`.
-5.  Verify installation: `convi --version`
+3.  Extract the archive. You will find a `convi` (or `convi.exe`) executable file.
+4.  **Important:** Place the extracted `convi` (or `convi.exe`) binary in a directory included in your system's `PATH` environment variable. This allows you to run `convi` from any directory. Common locations include `/usr/local/bin` (Linux/macOS) or a custom directory you add to your PATH.
+5.  Verify installation by opening a _new_ terminal window and running:
+    ```bash
+    convi --version
+    ```
 
-### 2. Using `go install`
+### 2. Using `go install` (for Go Developers)
 
-Requires Go (>= 1.19 recommended) to be installed.
+Requires Go (>= 1.21 recommended, check `go.mod` for exact version) to be installed.
 
-```bash
-go install github.com/stackvity/convi@latest
-```
+1.  Run the command:
+    ```bash
+    go install github.com/stackvity/convi@latest
+    ```
+2.  **Important:** Ensure your Go binary path (`$(go env GOPATH)/bin` or `$HOME/go/bin` by default) is included in your system's `PATH` environment variable. If not, add it to your shell profile (`.bashrc`, `.zshrc`, `.profile`, etc.) and restart your shell or source the profile.
+3.  Verify installation by opening a _new_ terminal window and running:
+    ```bash
+    convi --version
+    ```
 
-Ensure your Go binary path (`$GOPATH/bin` or `$HOME/go/bin`) is in your system `PATH`.
+### 3. Build from Source (for Developers/Contributors)
 
-### 3. Build from Source
+Requires Go (>= 1.21 recommended, check `go.mod`) and Git.
 
-Requires Go (>= 1.19 recommended) and Git.
-
-```bash
-git clone https://github.com/stackvity/convi.git
-cd convi
-# Optional: Check out a specific version tag
-# git checkout vX.Y.Z
-go mod tidy
-go build -ldflags="-s -w" -o convi .
-# Optionally move the 'convi' binary to your PATH
-./convi --version
-```
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/stackvity/convi.git
+    ```
+2.  Navigate into the project directory:
+    ```bash
+    cd convi
+    ```
+3.  _(Optional: Check out a specific version tag using `git checkout vX.Y.Z`)_
+4.  Ensure dependencies are up-to-date:
+    ```bash
+    go mod tidy
+    ```
+5.  Build the executable:
+    ```bash
+    go build .
+    ```
+    This creates an executable file named `convi` (or `convi.exe` on Windows) **in the current directory (`./`)**.
+    _(Note: Official release builds use specific flags like `-ldflags="-s -w"` for optimization and version embedding)._
+6.  **Run the local build:** Since the current directory might not be in your system's `PATH`, execute the binary using its relative path:
+    ```bash
+    ./convi --version
+    ```
+    Or, to run it with arguments:
+    ```bash
+    ./convi -i <input_dir> -o <output_dir>
+    ```
+7.  _(Optional)_ Move the compiled `./convi` binary to a directory in your system's `PATH` if you want to run it from anywhere using just `convi`.
 
 ## Usage
 
 ### Basic Syntax
 
 ```bash
+# If installed to PATH:
 convi -i <source_directory> -o <destination_directory> [flags]
+
+# If running a local build from source directory:
+./convi -i <source_directory> -o <destination_directory> [flags]
 ```
 
+**Note:** `-i` and `-o` are required flags.
+
 ### Examples
+
+_(Assuming `convi` is installed in your PATH)_
 
 1.  **Simple Conversion:** Convert files from `./src` to Markdown in `./docs`.
 
@@ -97,7 +132,7 @@ convi -i <source_directory> -o <destination_directory> [flags]
     convi -i . -o ./output --template ./mytemplate.md --ignore "**/node_modules/**" --ignore "*.log"
     ```
 
-5.  **Configuration File:** Use settings defined in `myconfig.yaml`.
+5.  **Configuration File:** Use settings defined in `myconfig.yaml` located in the current directory.
 
     ```bash
     convi -i ./src -o ./docs --config myconfig.yaml
@@ -112,12 +147,12 @@ convi -i <source_directory> -o <destination_directory> [flags]
 
 Run `convi --help` for a full list of flags, descriptions, default values, and corresponding environment variables.
 
-- `-i, --input DIR`: **Required.** Source directory. (Env: `CONVI_INPUT`)
-- `-o, --output DIR`: **Required.** Output directory. (Env: `CONVI_OUTPUT`)
-- `--config FILE`: Path to config file (default: `convi.yaml`, `.convi.yaml`).
+- `-i, --input DIR`: **Required.** Source directory containing code files. (Env: `CONVI_INPUT`)
+- `-o, --output DIR`: **Required.** Output directory for generated Markdown. (Env: `CONVI_OUTPUT`)
+- `--config FILE`: Path to config file (default searches for `convi.yaml` or `.convi.yaml` in the current directory).
 - `--ignore PATTERN`: Glob pattern for files/directories to ignore (can be repeated).
 - `--concurrency N`: Number of parallel workers (0 = auto-detect CPU cores). (Env: `CONVI_CONCURRENCY`)
-- `--cache / --no-cache`: Enable/disable reading the cache (default: enabled).
+- `--cache / --no-cache`: Enable/disable reading the cache (default: enabled). (Env: `CONVI_CACHE` true/false)
 - `--clear-cache`: Clear the cache file before running.
 - `--template FILE`: Path to a custom Go template file for Markdown output.
 - `--large-file-threshold MB`: Size threshold in MB to consider a file large (default: 100).
@@ -135,7 +170,7 @@ Run `convi --help` for a full list of flags, descriptions, default values, and c
 
 ### Configuration File (`convi.yaml`)
 
-Place a `convi.yaml`, `.convi.yaml`, `convi.json`, or `convi.toml` file in the directory where you run `convi`, or specify a path using `--config`.
+Place a `convi.yaml`, `.convi.yaml`, `convi.json`, or `convi.toml` file in the directory where you run `convi`. `convi` searches the current directory by default. You can specify a different path using `--config FILEPATH`.
 
 **Example (`convi.yaml`):**
 
@@ -143,30 +178,30 @@ Place a `convi.yaml`, `.convi.yaml`, `convi.json`, or `convi.toml` file in the d
 # --- Convi Configuration ---
 
 # Number of parallel workers (0 for auto-detect CPU cores)
-concurrency: 0
+concurrency: 0 # Default: 0 (auto)
 
 # Use file cache (true/false). Disable reads with --no-cache flag.
-cache: true
+cache: true # Default: true
 
 # Large file handling
-largeFileThresholdMB: 100 # Size limit in MB
-largeFileMode: "skip" # "skip" or "error"
+largeFileThresholdMB: 100 # Default: 100
+largeFileMode: "skip" # Default: "skip". Options: "skip", "error"
 
 # Binary file handling
-binaryMode: "skip" # "skip" or "placeholder"
+binaryMode: "skip" # Default: "skip". Options: "skip", "placeholder"
 
 # Path to a custom Go template file
-templateFile: ""
+templateFile: "" # Default: "" (uses built-in generation)
 
 # Language detection overrides (map[".ext"] = "language-name")
-languageMappings:
+languageMappings: # Default: empty map
   ".myext": "xml"
   # ".abc": "prolog"
 
 # Front Matter Generation
-frontMatter:
+frontMatter: # Default: disabled
   enabled: false
-  format: "yaml" # "yaml" or "toml"
+  format: "yaml" # Default: "yaml". Options: "yaml", "toml"
   static:
     generator: "Convi" # Example static field
     # another_static_field: value
@@ -175,7 +210,7 @@ frontMatter:
     - "DetectedLanguage"
 
 # Glob patterns for files/directories to ignore (uses .gitignore syntax)
-ignore:
+ignore: # Default: empty list
   - ".git/"
   - "node_modules/"
   - "dist/"
@@ -184,11 +219,11 @@ ignore:
   - ".convi.cache"
 
 # Watch mode settings
-watch:
+watchConfig: # Default: debounce 300ms
   debounce: "300ms" # Time to wait after last change before rebuilding
 
 # Skip hidden files/directories (starting with '.')
-skipHiddenFiles: true
+skipHiddenFiles: true # Default: true
 ```
 
 ### `.conviignore` File
@@ -212,14 +247,23 @@ vendor/
 
 ## Troubleshooting
 
+- **`convi: command not found`**:
+  - If installed via **binary download** or **`go install`**: Ensure the directory containing the `convi` executable is in your system's `PATH` environment variable. Open a _new_ terminal after modifying your PATH.
+  - If installed via **build from source**: Run the command using the relative path: `./convi [args...]` from within the project directory where you built it.
 - **Incorrect Output:** Use `--clear-cache` to rule out cache issues. Use `-v` to see detailed logs about skipping, processing steps, and cache decisions.
-- **Errors:** Check the summary report for specific file errors. Check logs (`-v`) for more context. Ensure correct file permissions.
-- **Performance:** Use `--concurrency` to adjust parallelism. Ensure caching is enabled (default).
-- **Watch Mode Issues:** Check `fsnotify` limitations for your OS/filesystem. Ensure adequate debounce time (`watch.debounce` in config).
+- **Errors During Run:**
+  - **Configuration Errors (e.g., `Error unmarshalling configuration...`, `Error reading config file...`):**
+    - Check your `convi.yaml` (or other config file) for valid YAML/JSON/TOML syntax.
+    - Ensure configuration values match expected types and constraints (see `convi --help` or the example `convi.yaml`).
+    - If you don't intend to use a config file, ensure there isn't a file named `convi` (without extension) or `.convi` in your current directory that might be conflicting with the executable name (especially if running `./convi` locally). You can create an empty `convi.yaml` or use `--config /dev/null` (Linux/macOS) to prevent accidental loading.
+    - Check file permissions if using `--config` with a specific file.
+  - **File Processing Errors (Exit Code 1):** Check the "Errors Encountered" list in the summary report for specific file paths and error messages. Check file permissions, encoding, or potential issues with large/binary file settings. Use `-v` for more detailed logs about the specific file failure.
+- **Performance:** Use `--concurrency N` to adjust parallelism. Ensure caching is enabled (`--cache` or default). Use `--no-cache` to diagnose if caching is causing unexpected behavior.
+- **Watch Mode Issues:** Check `fsnotify` limitations for your OS/filesystem (especially network drives). Ensure adequate debounce time (`watchConfig.debounce` in config). Use `-v` to see file events being detected.
 
 ## Contributing
 
-Contributions are welcome! Please see the [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines.
+Contributions are welcome! Please see the [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines on reporting bugs, proposing features, and submitting pull requests.
 
 ## License
 
