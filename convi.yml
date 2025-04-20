@@ -1,0 +1,9 @@
+templateFile: ./templatesc.tmpl
+# You can have other configuration settings below this line
+# For example:
+# concurrency: 4
+# ignore:
+#   - ".git/"
+#   - "node_modules/"
+# watch:
+#   debounce: "500ms"
